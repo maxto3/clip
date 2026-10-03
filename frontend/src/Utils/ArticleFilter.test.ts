@@ -3,6 +3,7 @@ import {
   categoryFeedIds,
   filterAndSortItems,
   findSelectedItem,
+  findVisibleItem,
   neighborItemId,
 } from './ArticleFilter'
 import type { Category, FeedWithUnread, Item } from '../Types'
@@ -256,5 +257,31 @@ describe('findSelectedItem', () => {
 
   it('两个列表都未命中时返回 null', () => {
     expect(findSelectedItem([item(1, 100)], [item(2, 100)], 99)).toBeNull()
+  })
+})
+
+describe('findVisibleItem', () => {
+  it('搜索模式下优先返回搜索结果（含完整正文的那份）', () => {
+    const light = item(1, 100, { title: '轻量副本' })
+    const full = item(1, 100, { title: '搜索完整' })
+    const found = findVisibleItem([light], [full], true, 1)
+    expect(found).toBe(full)
+  })
+
+  it('非搜索模式下优先返回常规列表', () => {
+    const light = item(1, 100, { title: '常规' })
+    const full = item(1, 100, { title: '搜索' })
+    const found = findVisibleItem([light], [full], false, 1)
+    expect(found).toBe(light)
+  })
+
+  it('搜索结果未命中时回退常规列表', () => {
+    const fallback = item(1, 100)
+    expect(findVisibleItem([fallback], [], true, 1)).toBe(fallback)
+  })
+
+  it('未选中或都未命中时返回 null', () => {
+    expect(findVisibleItem([item(1, 100)], [], true, null)).toBeNull()
+    expect(findVisibleItem([item(1, 100)], [], true, 99)).toBeNull()
   })
 })

@@ -3,11 +3,11 @@
 #
 # The lines below are called `modelines`. See `:help modeline`
 
-name: "Clip"
+name: "clip"
 arch: ${GOARCH}
 platform: "linux"
 version: "0.7.0"
-section: "default"
+section: "news"
 priority: "extra"
 maintainer: ${GIT_COMMITTER_NAME} <${GIT_COMMITTER_EMAIL}>
 description: "A simple cross-platform RSS reader"

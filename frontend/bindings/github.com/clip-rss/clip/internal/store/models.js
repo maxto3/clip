@@ -917,6 +917,24 @@ export class Settings {
              */
             this["readerBackground"] = "";
         }
+        if (!("readerShowSummary" in $$source)) {
+            /**
+             * ReaderShowSummary 阅读器正文模式：true 优先显示 RSS 摘要，false 优先显示提取的全文。
+             * 持久化为用户偏好：切换文章、重启都沿用上一次的选择。
+             * @member
+             * @type {boolean}
+             */
+            this["readerShowSummary"] = false;
+        }
+        if (!("menuBarVisible" in $$source)) {
+            /**
+             * MenuBarVisible 原生菜单栏是否可见（View 菜单「隐藏/显示菜单」的用户偏好）。
+             * F11 全屏与专注模式属于临时隐藏，退出时恢复到这个值，而不是无条件显示。
+             * @member
+             * @type {boolean}
+             */
+            this["menuBarVisible"] = false;
+        }
 
         Object.assign(this, $$source);
     }

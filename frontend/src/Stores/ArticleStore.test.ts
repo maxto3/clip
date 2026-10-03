@@ -1,5 +1,13 @@
-import { describe, it, expect, beforeEach, vi, type Mock } from 'vitest'
-import type { Item } from '../Types'
+import {
+  describe,
+  it,
+  expect,
+  afterEach,
+  beforeEach,
+  vi,
+  type Mock,
+} from 'vitest'
+import type { Item, Settings } from '../Types'
 
 vi.mock('../Utils', () => ({
   ItemService: {
@@ -15,7 +23,9 @@ vi.mock('../Utils', () => ({
     BatchMarkRead: vi.fn(),
     SearchItems: vi.fn(),
     AddNote: vi.fn(),
+    FetchFullContent: vi.fn(),
   },
+  showToast: vi.fn(),
   // SidebarStore.load 依赖（refreshSidebar 会触发）
   CategoryService: { ListCategories: vi.fn() },
   FeedService: { ListFeedsWithUnread: vi.fn() },
@@ -26,12 +36,14 @@ vi.mock('../Utils', () => ({
   toApiError: (e: unknown) => String(e),
 }))
 
-import { ItemService } from '../Utils'
+import { ItemService, SettingsService, showToast } from '../Utils'
 import { useArticleStore } from './ArticleStore'
 import { useSettingsStore } from './SettingsStore'
 import { useSearchHistoryStore } from './SearchHistoryStore'
 
 const ListItems = ItemService.ListItems as Mock
+const FetchFullContent = ItemService.FetchFullContent as Mock
+const UpdateSettings = SettingsService.UpdateSettings as Mock
 const ListItemsLight = ItemService.ListItemsLight as Mock
 const ListUnreadItemsLight = ItemService.ListUnreadItemsLight as Mock
 const ListStarredItemsLight = ItemService.ListStarredItemsLight as Mock
@@ -77,6 +89,7 @@ beforeEach(() => {
   BatchMarkRead.mockResolvedValue(undefined)
   SearchItems.mockResolvedValue([])
   AddNote.mockResolvedValue(undefined)
+  FetchFullContent.mockResolvedValue('<p>提取出的全文</p>')
   reset()
 })
 
@@ -206,7 +219,7 @@ describe('ArticleStore', () => {
     expect(useArticleStore.getState().showSummary).toBe(false)
   })
 
-  it('切换文章复位摘要态，不继承上一篇的显示模式', () => {
+  it('切换文章保持摘要偏好，不继承复位', () => {
     useArticleStore.setState({
       items: [item(1, { isRead: true }), item(2, { isRead: true })],
     })
@@ -215,7 +228,84 @@ describe('ArticleStore', () => {
     expect(useArticleStore.getState().showSummary).toBe(true)
 
     useArticleStore.getState().selectItem(2)
-    expect(useArticleStore.getState().showSummary).toBe(false)
+    expect(useArticleStore.getState().showSummary).toBe(true)
+  })
+
+  it('toggleBodyMode 把选择持久化到后端设置', () => {
+    useSettingsStore.setState({
+      settings: { readerShowSummary: false } as Settings,
+    })
+    useArticleStore.getState().toggleBodyMode()
+    expect(useSettingsStore.getState().settings?.readerShowSummary).toBe(true)
+    expect(UpdateSettings).toHaveBeenCalledWith(
+      expect.objectContaining({ readerShowSummary: true }),
+    )
+  })
+
+  it('后端同步的正文模式会应用回 store', () => {
+    useArticleStore.setState({ showSummary: false })
+    useSettingsStore.setState({
+      settings: { readerShowSummary: true } as Settings,
+    })
+    expect(useArticleStore.getState().showSummary).toBe(true)
+  })
+
+  it('搜索模式下选中优先用搜索结果的完整数据，不丢已有全文', () => {
+    useArticleStore.setState({
+      items: [item(1, { content: '', fullContent: '' })],
+      searchResults: [
+        item(1, { content: '<p>摘要</p>', fullContent: '<p>全文</p>' }),
+      ],
+      searchActive: true,
+    })
+    useArticleStore.getState().selectItem(1)
+    expect(useArticleStore.getState().selectedItemId).toBe(1)
+    // 搜索结果已带 content，不需要再向后端按需加载正文。
+    expect(GetItem).not.toHaveBeenCalled()
+  })
+
+  it('loadFullContent 同时回填 content 与 fullContent', async () => {
+    useArticleStore.setState({ items: [item(5)] })
+    GetItem.mockResolvedValue({
+      ...item(5),
+      content: '<p>RSS</p>',
+      fullContent: '<p>全文</p>',
+    })
+    await useArticleStore.getState().loadFullContent(5)
+    const got = useArticleStore.getState().items.find((it) => it.id === 5)
+    expect(got?.content).toBe('<p>RSS</p>')
+    expect(got?.fullContent).toBe('<p>全文</p>')
+  })
+
+  it('requestFirstSelection 后，下次加载完成自动选中第一篇', async () => {
+    ListItemsLight.mockResolvedValue([
+      item(1, { publishedAt: '2026-01-02T00:00:00Z', isRead: true }),
+      item(2, { publishedAt: '2026-01-01T00:00:00Z', isRead: true }),
+    ])
+    useArticleStore.getState().requestFirstSelection()
+    await useArticleStore.getState().load({ kind: 'feed', id: 5 })
+    expect(useArticleStore.getState().selectedItemId).toBe(1)
+  })
+
+  it('未请求时加载完成不自动选中', async () => {
+    ListItemsLight.mockResolvedValue([
+      item(1, { publishedAt: '2026-01-02T00:00:00Z' }),
+    ])
+    await useArticleStore.getState().load({ kind: 'feed', id: 5 })
+    expect(useArticleStore.getState().selectedItemId).toBeNull()
+  })
+
+  it('requestFirstSelection 只对下一次加载生效', async () => {
+    ListItemsLight.mockResolvedValue([
+      item(1, { publishedAt: '2026-01-02T00:00:00Z', isRead: true }),
+    ])
+    useArticleStore.getState().requestFirstSelection()
+    await useArticleStore.getState().load({ kind: 'feed', id: 5 })
+    expect(useArticleStore.getState().selectedItemId).toBe(1)
+
+    useArticleStore.setState({ selectedItemId: null })
+    await useArticleStore.getState().load({ kind: 'feed', id: 6 })
+    expect(useArticleStore.getState().selectedItemId).toBeNull()
   })
 
   it('saveNote 乐观更新 note 并调用 AddNote', async () => {
@@ -354,6 +444,8 @@ describe('ArticleStore', () => {
           readerLineHeight: 1.8,
           readerWidth: '640',
           readerBackground: 'default',
+          readerShowSummary: false,
+          menuBarVisible: true,
         },
       })
     })
@@ -419,6 +511,78 @@ describe('ArticleStore', () => {
       useArticleStore.getState().selectItem(1)
       expect(useArticleStore.getState().items[0].isRead).toBe(false)
       expect(MarkRead).not.toHaveBeenCalled()
+    })
+  })
+
+  // ─── 全文模式自动提取 ───
+
+  describe('全文模式自动提取', () => {
+    beforeEach(() => {
+      vi.useRealTimers()
+      vi.useFakeTimers()
+    })
+
+    afterEach(() => {
+      vi.useRealTimers()
+    })
+
+    it('偏好全文时，选中没有全文的文章会自动提取', async () => {
+      useArticleStore.setState({
+        items: [item(1, { isRead: true })],
+        showSummary: false,
+      })
+      useArticleStore.getState().selectItem(1)
+      await vi.advanceTimersByTimeAsync(500)
+      expect(FetchFullContent).toHaveBeenCalledWith(1)
+    })
+
+    it('偏好摘要时不自动提取，仍可手动获取', async () => {
+      useArticleStore.setState({
+        items: [item(1, { isRead: true })],
+        showSummary: true,
+      })
+      useArticleStore.getState().selectItem(1)
+      await vi.advanceTimersByTimeAsync(500)
+      expect(FetchFullContent).not.toHaveBeenCalled()
+    })
+
+    it('库里已有全文时不重复联网提取', async () => {
+      GetItem.mockResolvedValue({
+        ...item(1, { isRead: true }),
+        content: '<p>RSS</p>',
+        fullContent: '<p>库里的全文</p>',
+      })
+      useArticleStore.setState({
+        items: [item(1, { isRead: true })],
+        showSummary: false,
+      })
+      useArticleStore.getState().selectItem(1)
+      await vi.advanceTimersByTimeAsync(500)
+      expect(FetchFullContent).not.toHaveBeenCalled()
+    })
+
+    it('快速切换文章时取消上一篇的自动提取', async () => {
+      useArticleStore.setState({
+        items: [item(1, { isRead: true }), item(2, { isRead: true })],
+        showSummary: false,
+      })
+      useArticleStore.getState().selectItem(1)
+      useArticleStore.getState().selectItem(2)
+      await vi.advanceTimersByTimeAsync(500)
+      expect(FetchFullContent).toHaveBeenCalledTimes(1)
+      expect(FetchFullContent).toHaveBeenCalledWith(2)
+    })
+
+    it('自动提取失败保持安静，不弹 toast', async () => {
+      FetchFullContent.mockRejectedValue(new Error('boom'))
+      useArticleStore.setState({
+        items: [item(1, { isRead: true })],
+        showSummary: false,
+      })
+      useArticleStore.getState().selectItem(1)
+      await vi.advanceTimersByTimeAsync(500)
+      expect(FetchFullContent).toHaveBeenCalledWith(1)
+      expect(showToast).not.toHaveBeenCalled()
     })
   })
 })

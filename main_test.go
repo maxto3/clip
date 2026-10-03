@@ -284,3 +284,99 @@ func TestCleanOrphanedUpdateDirs_OnlyNewest(t *testing.T) {
 		t.Errorf("the only directory should be kept as newest")
 	}
 }
+
+// TestMenuBarControllerPreference 验证菜单栏状态机：Ctrl+M 写入用户偏好并持久化；
+// F11/专注模式的临时隐藏不动偏好，退出时恢复到偏好而不是无条件显示。
+func TestMenuBarControllerPreference(t *testing.T) {
+	var saved []bool
+	c := newMenuBarController(nil, true, func(v bool) { saved = append(saved, v) })
+
+	// 临时隐藏（F11/专注）不写偏好，恢复后回到用户偏好（可见）。
+	c.Set(false)
+	if c.visible {
+		t.Fatal("Set(false) 后应隐藏")
+	}
+	c.Restore()
+	if !c.visible {
+		t.Fatal("Restore 应回到用户偏好（可见）")
+	}
+	if len(saved) != 0 {
+		t.Fatalf("临时隐藏不应写偏好，got %v", saved)
+	}
+
+	// Ctrl+M 隐藏并持久化 false。
+	c.Toggle()
+	if c.visible {
+		t.Fatal("Toggle 后应隐藏")
+	}
+	if len(saved) != 1 || saved[0] {
+		t.Fatalf("Toggle 隐藏应持久化 false，got %v", saved)
+	}
+
+	// 用户偏好是隐藏时，F11/专注退出的 Restore 不应把菜单显示出来。
+	c.Set(false)
+	c.Restore()
+	if c.visible {
+		t.Fatal("用户偏好为隐藏时，Restore 不应显示菜单")
+	}
+
+	// 再 Toggle 显示并持久化 true。
+	c.Toggle()
+	if !c.visible || len(saved) != 2 || !saved[1] {
+		t.Fatalf("Toggle 显示应持久化 true，got visible=%v saved=%v", c.visible, saved)
+	}
+}
+
+// TestMenuBarControllerStartHidden 验证以「用户偏好隐藏」启动时立即收起，
+// 且不写入偏好（偏好本来就已是 false）。
+func TestMenuBarControllerStartHidden(t *testing.T) {
+	var saved []bool
+	c := newMenuBarController(nil, false, func(v bool) { saved = append(saved, v) })
+	if c.visible {
+		t.Fatal("偏好隐藏时启动应为隐藏")
+	}
+	if len(saved) != 0 {
+		t.Fatalf("启动套用偏好不应写回，got %v", saved)
+	}
+
+	c.Restore()
+	if c.visible {
+		t.Fatal("Restore 不应显示菜单")
+	}
+
+	c.Toggle()
+	if !c.visible || len(saved) != 1 || !saved[0] {
+		t.Fatalf("Toggle 应显示并持久化 true，got visible=%v saved=%v", c.visible, saved)
+	}
+}
+
+// TestMenuI18nParity 验证原生菜单文案三语言齐全，且 menuRoleKeys 引用的每个 key 都有
+// 译文。缺失时 label() 会静默回退英文，用户看到「中文界面里夹英文菜单」。
+func TestMenuI18nParity(t *testing.T) {
+	dict := menuI18nDict()
+	en := dict["en"]
+	if len(en) == 0 {
+		t.Fatal("menu dict 缺少非空 en 段")
+	}
+	for _, lang := range []string{"zh", "zh-TW"} {
+		labels := dict[lang]
+		if len(labels) == 0 {
+			t.Fatalf("menu dict 缺少非空 %s 段", lang)
+		}
+		for key := range en {
+			if labels[key] == "" {
+				t.Errorf("%s 缺少 menu key %q", lang, key)
+			}
+		}
+		for key := range labels {
+			if _, ok := en[key]; !ok {
+				t.Errorf("%s 多出 menu key %q", lang, key)
+			}
+		}
+	}
+	for _, rk := range menuRoleKeys {
+		if en[rk.key] == "" {
+			t.Errorf("menuRoleKeys 引用了不存在的 key %q", rk.key)
+		}
+	}
+}

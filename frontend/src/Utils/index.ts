@@ -28,6 +28,8 @@ export { importOpmlFromFile, importOpmlFromURL, exportOpmlToFile } from './Opml'
 export {
   buildFeedTree,
   flattenCategories,
+  flattenFeedIds,
+  feedAncestorIds,
   compareFeedBy,
   isFeedErrored,
   erroredFeedIds,
@@ -40,6 +42,7 @@ export {
   articleBody,
   hasArticleBody,
   hasRssContent,
+  isSummaryView,
   fullTextButtonMode,
   FULL_TEXT_TITLE_KEY,
   type FullTextButtonMode,
@@ -53,6 +56,7 @@ export {
   categoryFeedIds,
   filterAndSortItems,
   findSelectedItem,
+  findVisibleItem,
   neighborItemId,
 } from './ArticleFilter'
 export type { FilterSortOptions } from './ArticleFilter'

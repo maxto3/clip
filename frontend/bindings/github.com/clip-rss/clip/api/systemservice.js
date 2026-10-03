@@ -83,6 +83,16 @@ export function Platform() {
 }
 
 /**
+ * SetFocusMode 由前端在进入/退出专注阅读模式时调用：前端 chrome 由 CSS 隐藏，
+ * 原生菜单栏只存在于 GTK/系统层，交给 main 注入的回调处理。
+ * @param {boolean} enabled
+ * @returns {$CancellablePromise<void>}
+ */
+export function SetFocusMode(enabled) {
+    return $Call.ByID(2704993486, enabled);
+}
+
+/**
  * SetOnline 接收前端 navigator.onLine 变化并同步后台网络模式。
  * @param {boolean} online
  * @returns {$CancellablePromise<void>}

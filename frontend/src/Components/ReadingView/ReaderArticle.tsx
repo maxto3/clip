@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next'
 import {
   articleBody,
   formatRelativeTime,
+  isSummaryView,
   parseCategories,
   type ReaderContentStyle,
 } from '../../Utils'
@@ -75,7 +76,7 @@ function ReaderArticle(props: ReaderArticleProps): JSX.Element {
       />
       {/* 正在看摘要、而全文已经在库里时，「已是全部内容」是句假话。 */}
       <div className={styles.endHint}>
-        {showSummary && item.fullContent
+        {isSummaryView(item, showSummary) && item.fullContent
           ? t('reader.fullText.summaryOnly')
           : t('reader.endOfContent')}
       </div>

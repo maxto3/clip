@@ -11,16 +11,30 @@ import type { Item } from '../Types'
 type ArticleBodyFields = Pick<Item, 'content' | 'fullContent'>
 
 /**
+ * 当前是否真的在渲染 RSS 摘要。
+ *
+ * showSummary 是持久化的用户偏好，因此可能作用于「只有提取全文、RSS 没给正文」的
+ * 文章。这种情况没有摘要可看，必须回退全文——否则阅读区空白，且切换按钮是禁用态，
+ * 用户会卡死。所有「按偏好选正文」的地方都经由这个判定，保证渲染与文案一致。
+ */
+export function isSummaryView(
+  item: ArticleBodyFields,
+  showSummary: boolean,
+): boolean {
+  return showSummary && item.content.trim() !== ''
+}
+
+/**
  * 实际要渲染的正文 HTML。
  *
- * showSummary 为真时强制用 RSS 正文（手动切回摘要，不看 fullContent）；否则提取过
- * 全文就用全文，再回落 RSS 正文。两份都没有时返回空串，调用方据此展示空状态。
+ * 偏好摘要且 RSS 有正文时用 RSS 正文；否则提取过全文就用全文，再回落 RSS 正文。
+ * 两份都没有时返回空串，调用方据此展示空状态。
  */
 export function articleBody(
   item: ArticleBodyFields,
   showSummary = false,
 ): string {
-  if (showSummary) return item.content
+  if (isSummaryView(item, showSummary)) return item.content
   return item.fullContent || item.content
 }
 

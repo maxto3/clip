@@ -58,6 +58,9 @@ type SystemService struct {
 	// OnlineChangedFn 由 main 注入，把 WebView 的在线状态同步给后台调度器。
 	OnlineChangedFn func(online bool)
 
+	// FocusModeChangedFn 由 main 注入：专注阅读模式开关，用于显隐原生菜单栏。
+	FocusModeChangedFn func(enabled bool)
+
 	// LanguageFn 由 main 注入，每次生成用户可见提示时读取当前语言。
 	LanguageFn func() string
 
@@ -199,6 +202,14 @@ func (s *SystemService) IsOnline() bool {
 func (s *SystemService) SetOnline(online bool) {
 	if s.OnlineChangedFn != nil {
 		s.OnlineChangedFn(online)
+	}
+}
+
+// SetFocusMode 由前端在进入/退出专注阅读模式时调用：前端 chrome 由 CSS 隐藏，
+// 原生菜单栏只存在于 GTK/系统层，交给 main 注入的回调处理。
+func (s *SystemService) SetFocusMode(enabled bool) {
+	if s.FocusModeChangedFn != nil {
+		s.FocusModeChangedFn(enabled)
 	}
 }
 

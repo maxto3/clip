@@ -146,3 +146,19 @@ export function findSelectedItem(
     null
   )
 }
+
+/**
+ * 按「当前可见列表」查找选中文章：搜索模式下中间栏展示 searchResults，选中态也应
+ * 以它为准。同一篇文章在 items 里可能只是轻量副本（content / fullContent 为空），
+ * 若优先命中它，阅读区会显示空正文，已有的全文（fullContent）也会丢失。
+ */
+export function findVisibleItem(
+  items: Item[],
+  searchResults: Item[],
+  searchActive: boolean,
+  selectedId: number | null,
+): Item | null {
+  return searchActive
+    ? findSelectedItem(searchResults, items, selectedId)
+    : findSelectedItem(items, searchResults, selectedId)
+}

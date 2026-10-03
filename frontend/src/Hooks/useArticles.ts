@@ -3,7 +3,7 @@ import { useArticleStore, useSidebarStore } from '../Stores'
 import {
   categoryFeedIds,
   filterAndSortItems,
-  findSelectedItem,
+  findVisibleItem,
   neighborItemId,
 } from '../Utils'
 import type { Item } from '../Types'
@@ -11,7 +11,7 @@ import type { Item } from '../Types'
 /** 当前选中的文章（常规列表与搜索结果均可），无选中或未命中时为 null。 */
 export function useSelectedItem(): Item | null {
   return useArticleStore((s) =>
-    findSelectedItem(s.items, s.searchResults, s.selectedItemId),
+    findVisibleItem(s.items, s.searchResults, s.searchActive, s.selectedItemId),
   )
 }
 

@@ -3,6 +3,7 @@ import {
   articleBody,
   hasArticleBody,
   hasRssContent,
+  isSummaryView,
   fullTextButtonMode,
   FULL_TEXT_TITLE_KEY,
   type FullTextButtonMode,
@@ -64,13 +65,31 @@ describe('articleBody 的摘要模式（手动切回 RSS 正文）', () => {
     expect(articleBody(BOTH, true)).toBe('<p>摘要</p>')
   })
 
-  it('showSummary 时没有 RSS 正文就是空（调用方据此禁掉切换）', () => {
-    expect(articleBody(ONLY_FULL, true)).toBe('')
-    expect(hasArticleBody(ONLY_FULL, true)).toBe(false)
+  it('showSummary 但 RSS 没给正文时回退全文，不显示空状态', () => {
+    // 偏好摘要可能作用于「只有提取全文」的文章：不回退会让阅读区空白，
+    // 而按钮又是禁用态，用户无处可切。
+    expect(articleBody(ONLY_FULL, true)).toBe('<p>全文</p>')
+    expect(hasArticleBody(ONLY_FULL, true)).toBe(true)
   })
 
   it('默认（不传）仍是全文优先，与加开关之前一致', () => {
     expect(articleBody(BOTH)).toBe('<p>全文</p>')
+  })
+})
+
+describe('isSummaryView', () => {
+  it('偏好摘要且 RSS 有正文时为 true', () => {
+    expect(isSummaryView(BOTH, true)).toBe(true)
+    expect(isSummaryView(ONLY_RSS, true)).toBe(true)
+  })
+
+  it('偏好摘要但没有 RSS 正文时为 false（实际看的是全文）', () => {
+    expect(isSummaryView(ONLY_FULL, true)).toBe(false)
+    expect(isSummaryView(NEITHER, true)).toBe(false)
+  })
+
+  it('未偏好摘要时始终 false', () => {
+    expect(isSummaryView(BOTH, false)).toBe(false)
   })
 })
 

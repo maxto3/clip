@@ -141,6 +141,45 @@ export function buildFeedTree(
   }
 }
 
+/**
+ * 按侧栏渲染顺序展开全部订阅源 id。
+ *
+ * 顺序与 FolderItem 的渲染一致：子分类递归在前、本级源在后，未分类源在最后。
+ * 与渲染不同的是**不跳过折叠分类里的源**——否则大多数文件夹收起时快捷键几乎无处
+ * 可去；切换后由调用方展开祖先分类，保证选中项在侧栏可见。
+ */
+export function flattenFeedIds(tree: FeedTree): number[] {
+  const out: number[] = []
+  function walk(node: FeedTreeNode): void {
+    for (const child of node.children) walk(child)
+    for (const feed of node.feeds) out.push(feed.id)
+  }
+  for (const root of tree.roots) walk(root)
+  for (const feed of tree.uncategorized) out.push(feed.id)
+  return out
+}
+
+/**
+ * 订阅源所在分类及其全部祖先分类 id（直接父级在前、根在后）。
+ * 未分类返回空数组；对损坏的 parentId 环有防御。
+ */
+export function feedAncestorIds(
+  categories: Category[],
+  feed: FeedWithUnread | undefined,
+): number[] {
+  if (!feed || feed.categoryId === null || feed.categoryId === 0) return []
+  const byId = new Map(categories.map((c) => [c.id, c]))
+  const out: number[] = []
+  const seen = new Set<number>()
+  let cur = byId.get(feed.categoryId)
+  while (cur && !seen.has(cur.id)) {
+    seen.add(cur.id)
+    out.push(cur.id)
+    cur = cur.parentId !== null ? byId.get(cur.parentId) : undefined
+  }
+  return out
+}
+
 /** 归属文件夹下拉用的分类项：按树前序展开，depth 用于缩进。 */
 export interface CategoryOption {
   id: number

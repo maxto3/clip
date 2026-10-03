@@ -10,7 +10,12 @@ import {
   ToastContainer,
   Toolbar,
 } from './Components'
-import { useAppHotkeys, useDockBadge, useNotificationNavigation } from './Hooks'
+import {
+  useAppHotkeys,
+  useDockBadge,
+  useFocusModeSync,
+  useNotificationNavigation,
+} from './Hooks'
 import './I18n'
 import i18next from 'i18next'
 import { migrateLegacyPrefs, useSettingsStore, useUpdateStore } from './Stores'
@@ -32,6 +37,7 @@ function App() {
   useAppHotkeys({ onAddFeed: openAddFeed, onOpenSettings: openSettings })
   useNotificationNavigation()
   useDockBadge()
+  useFocusModeSync()
 
   useEffect(() => {
     void (async () => {

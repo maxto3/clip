@@ -39,6 +39,8 @@ const baseSettings: Settings = {
   readerLineHeight: 1.8,
   readerWidth: '640',
   readerBackground: 'default',
+  readerShowSummary: false,
+  menuBarVisible: true,
 }
 
 beforeEach(() => {

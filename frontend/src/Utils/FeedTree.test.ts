@@ -2,6 +2,8 @@ import { describe, it, expect } from 'vitest'
 import {
   buildFeedTree,
   flattenCategories,
+  flattenFeedIds,
+  feedAncestorIds,
   compareFeedBy,
   isFeedErrored,
   erroredFeedIds,
@@ -318,5 +320,48 @@ describe('isFeedErrored / erroredFeedIds', () => {
     ]
     expect(erroredFeedIds(feeds)).toEqual([2, 3, 4])
     expect(erroredFeedIds([])).toEqual([])
+  })
+})
+
+describe('flattenFeedIds', () => {
+  it('按渲染顺序展开：子分类在前、本级源在后，未分类最后', () => {
+    const categories = [cat(1, 'root'), cat(2, 'child', 1)]
+    const feeds = [
+      feed(1, 'root-feed', 1, 0),
+      feed(2, 'child-feed', 2, 0),
+      feed(3, 'loose', null, 0),
+    ]
+    const tree = buildFeedTree(categories, feeds)
+    // FolderItem 先渲染子文件夹再渲染本级源；未分类源在整个树之后。
+    expect(flattenFeedIds(tree)).toEqual([2, 1, 3])
+  })
+
+  it('不跳过折叠分类里的源（快捷键需要能到达）', () => {
+    const categories = [cat(1, 'root')]
+    const feeds = [feed(1, 'a', 1, 0), feed(2, 'b', null, 0)]
+    const tree = buildFeedTree(categories, feeds)
+    expect(flattenFeedIds(tree)).toEqual([1, 2])
+  })
+
+  it('空树返回空数组', () => {
+    expect(flattenFeedIds(buildFeedTree([], []))).toEqual([])
+  })
+})
+
+describe('feedAncestorIds', () => {
+  it('返回直接分类到根的链', () => {
+    const categories = [cat(1, 'root'), cat(2, 'mid', 1), cat(3, 'leaf', 2)]
+    expect(feedAncestorIds(categories, feed(9, 'f', 3, 0))).toEqual([3, 2, 1])
+  })
+
+  it('未分类、源不存在都返回空数组', () => {
+    expect(feedAncestorIds([], feed(9, 'f', null, 0))).toEqual([])
+    expect(feedAncestorIds([], feed(9, 'f', 0, 0))).toEqual([])
+    expect(feedAncestorIds([], undefined)).toEqual([])
+  })
+
+  it('对损坏的 parentId 环有防御，不会死循环', () => {
+    const categories = [cat(1, 'a', 2), cat(2, 'b', 1)]
+    expect(feedAncestorIds(categories, feed(9, 'f', 1, 0))).toEqual([1, 2])
   })
 })

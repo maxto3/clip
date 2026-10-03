@@ -1157,6 +1157,8 @@ export function ShortcutSection(): JSX.Element {
       items: [
         { combo: 'j / ↓', descKey: 'settings.shortcuts.nextArticle' },
         { combo: 'k / ↑', descKey: 'settings.shortcuts.prevArticle' },
+        { combo: 'mod+j', descKey: 'settings.shortcuts.nextFeed' },
+        { combo: 'mod+k', descKey: 'settings.shortcuts.prevFeed' },
         { combo: 'space', descKey: 'settings.shortcuts.scrollDown' },
         { combo: 'shift+space', descKey: 'settings.shortcuts.scrollUp' },
         { combo: 'mod+shift+f', descKey: 'settings.shortcuts.toggleFocus' },

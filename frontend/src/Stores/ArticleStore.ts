@@ -1,5 +1,11 @@
 import { create } from 'zustand'
 import { ItemService, showToast, toApiError } from '../Utils'
+// 纯函数直接引模块：测试会整体 mock '../Utils'（内含 Wails 绑定），走 barrel 会
+// 让未列入 mock 的它变成 undefined。
+import {
+  filterAndSortItems,
+  findVisibleItem,
+} from '../Utils/ArticleFilter'
 import { useSidebarStore } from './SidebarStore'
 import { useSettingsStore } from './SettingsStore'
 import { useSearchHistoryStore } from './SearchHistoryStore'
@@ -14,6 +20,12 @@ import type {
 /** 单次拉取上限：客户端筛选/排序 + 虚拟滚动，足够覆盖常规留存量。 */
 const LOAD_LIMIT = 2000
 
+/**
+ * 全文模式下自动提取正文的延迟：快速翻页时先不发请求，停在这篇再抓，
+ * 避免连续翻几篇就打出一串原文站请求。
+ */
+const AUTO_FETCH_FULL_TEXT_DELAY = 500
+
 /** 将 ItemLight 转换为 Item（content / fullContent 为空字符串）。 */
 function lightToItem(light: ItemLight): Item {
   return { ...light, content: '', fullContent: '' }
@@ -21,6 +33,9 @@ function lightToItem(light: ItemLight): Item {
 
 /** 自动标记已读的待定计时器（延迟模式下生效，切换文章时清除）。 */
 let autoMarkTimer: number | undefined
+
+/** 全文模式下自动提取正文的待定计时器（切换文章/退出后取消）。 */
+let autoFetchTimer: number | undefined
 
 interface ArticleState {
   items: Item[]
@@ -73,23 +88,25 @@ interface ArticleState {
    * 与 loadFullContent 是两条不同的路径，别混：那个读的是**本地库**里 RSS 没随
    * 列表接口带出来的 content，零网络请求；这个真的会去请求文章原站，结果落在
    * fullContent 上，不覆盖 content。
+   *
+   * silentFail 为真时不弹失败 toast：全文模式的自动提取会随翻页触发，失败时
+   * 静默回落 RSS 正文，用户仍可手动点「获取全文」重试。
    */
-  fetchFullContent: (id: number) => Promise<void>
+  fetchFullContent: (id: number, silentFail?: boolean) => Promise<void>
   /** 正在提取全文的文章 ID。 */
   fullTextLoadingId: number | null
 
   /**
-   * 当前选中的文章是否正在显示 RSS 摘要（而不是提取出的全文）。
+   * 是否优先显示 RSS 摘要（而不是提取出的全文）。
    *
-   * 只对当前这一篇有效，切换文章即复位：阅读视图与专注模式同时只渲染一篇，
-   * 所以不需要按文章 ID 存一份映射。默认 false —— 有全文就显示全文，
-   * 与加这个开关之前的行为完全一致。
+   * 这是持久化的用户偏好（后端 Settings.readerShowSummary）：切换文章、重启、跨端
+   * 同步后都沿用上一次的选择。阅读视图与专注模式同时只渲染一篇，所以不需要按文章
+   * ID 存映射。RSS 没给正文的文章由 Utils/ArticleBody 回退全文，不受此偏好影响。
    *
-   * 不持久化是刻意的：这是「这篇文章现在看哪一份」，属于会话状态而非用户偏好，
-   * 后端 Settings 里没有它的位置。
+   * 默认 false —— 有全文就显示全文，与加这个开关之前的行为一致。
    */
   showSummary: boolean
-  /** 在摘要与全文之间切换（仅两份正文都在时由工具栏按钮调用）。 */
+  /** 在摘要与全文之间切换并持久化为用户偏好（仅两份正文都在时由工具栏按钮调用）。 */
   toggleBodyMode: () => void
 
   /** 仅更新搜索框文本（不触发请求；防抖在调用方）。 */
@@ -103,6 +120,16 @@ interface ArticleState {
   pendingSelectId: number | null
   /** 通知点击后置位待定位 ID，下次 load 完成时自动选中。 */
   scheduleSelect: (id: number) => void
+
+  /**
+   * 下次列表加载完成后若仍无选中，自动选中第一篇文章。
+   *
+   * 专注模式下用 Ctrl+J/K 切换订阅源时置位：上一篇选中文章已不在新源的列表里，
+   * 否则阅读区会停在「选择一篇文章」的空状态。一次性，加载时消费。
+   */
+  selectFirstAfterLoad: boolean
+  /** 请求下次加载完成后选中第一篇。 */
+  requestFirstSelection: () => void
 }
 
 function scopeFeedId(selection: Selection): number {
@@ -115,6 +142,21 @@ function refreshSidebar(): void {
 }
 
 export const useArticleStore = create<ArticleState>()((set, get) => {
+  /**
+   * 全文偏好下自动补齐正文：延迟触发，且触发时重新核对「仍是当前选中、仍是全文
+   * 偏好、库里确实没有全文」。摘要偏好不自动抓——用户明确选择了只看摘要。
+   */
+  function scheduleAutoFetchFullText(id: number): void {
+    window.clearTimeout(autoFetchTimer)
+    autoFetchTimer = window.setTimeout(() => {
+      const s = get()
+      if (s.showSummary || s.selectedItemId !== id) return
+      const item = findVisibleItem(s.items, s.searchResults, s.searchActive, id)
+      if (!item || item.fullContent) return
+      void s.fetchFullContent(id, true)
+    }, AUTO_FETCH_FULL_TEXT_DELAY)
+  }
+
   /** 局部更新某文章字段（同步 items 与 searchResults，保证两种列表显示一致）。 */
   function patchItem(id: number, patch: Partial<Item>): void {
     const apply = (list: Item[]): Item[] =>
@@ -139,6 +181,10 @@ export const useArticleStore = create<ArticleState>()((set, get) => {
     selection: Selection,
     preserveSelection = false,
   ): Promise<void> {
+    // 消费「加载后选第一篇」请求：只对本次加载生效，失败也不残留到下一次。
+    const selectFirstAfterLoad = get().selectFirstAfterLoad
+    if (selectFirstAfterLoad) set({ selectFirstAfterLoad: false })
+
     set({ loading: true, error: null })
     try {
       const feedId = scopeFeedId(selection)
@@ -189,12 +235,19 @@ export const useArticleStore = create<ArticleState>()((set, get) => {
         loading: false,
         selectedItemId: selectedId,
         pendingSelectId: null,
-        // 摘要态只属于它被切换时的那一篇。这里也要复位，因为通知定位
-        // （pendingSelectId）这条路不走 selectItem，否则会把上一篇的显示模式带过来；
-        // reload 保持同一篇时则要留着——正文刷新不该把正在读的摘要顶回全文。
-        showSummary:
-          selectedId === prev.selectedItemId ? prev.showSummary : false,
+        // showSummary 是持久化偏好，正文刷新/通知定位都不应改变它。
       })
+
+      // 专注模式切换订阅源后没有可保留的选中文章：落到当前筛选下的第一篇，
+      // 否则阅读区停在空状态。与可见列表同一套筛选/排序口径。
+      if (selectFirstAfterLoad && selectedId === null) {
+        const first = filterAndSortItems(items, {
+          filter: get().filter,
+          sort: get().sort,
+          allowedFeedIds: null,
+        })[0]
+        if (first) get().selectItem(first.id)
+      }
     } catch (err) {
       set({ error: toApiError(err), loading: false })
     }
@@ -213,6 +266,7 @@ export const useArticleStore = create<ArticleState>()((set, get) => {
     searching: false,
     searchActive: false,
     pendingSelectId: null,
+    selectFirstAfterLoad: false,
     loadingContentId: null,
     fullTextLoadingId: null,
     showSummary: false,
@@ -254,19 +308,28 @@ export const useArticleStore = create<ArticleState>()((set, get) => {
     },
 
     selectItem(id) {
-      // 切换文章先取消上一篇仍未触发的延迟标记。
+      // 切换文章先取消上一篇仍未触发的延迟标记与自动提取。
       window.clearTimeout(autoMarkTimer)
-      // 上一篇的「正在看摘要」的切换只属于那一篇，切换即清除。
-      set({ selectedItemId: id, showSummary: false })
-      const { items, searchResults } = get()
-      const item =
-        items.find((it) => it.id === id) ??
-        searchResults.find((it) => it.id === id)
+      window.clearTimeout(autoFetchTimer)
+      // 摘要/全文是持久化偏好，切换文章时保留。
+      set({ selectedItemId: id })
+      const { items, searchResults, searchActive } = get()
+      // 搜索模式下当前列表是 searchResults：同一篇文章在 items 里是轻量副本
+      // （content / fullContent 为空），必须优先用搜索结果，否则会丢掉库里已有的全文。
+      const item = findVisibleItem(items, searchResults, searchActive, id)
       if (!item) return
 
       // 按需加载正文：列表拉取的轻量版本 content 为空，点击时才拉取完整内容。
+      // 库里的正文到位后再决定要不要自动提取原文（库里已有全文就不联网）。
       if (!item.content) {
-        void get().loadFullContent(id)
+        void get()
+          .loadFullContent(id)
+          .then(() => {
+            // 加载期间可能已切走：切走就不再安排，避免清掉新文章的计时器。
+            if (get().selectedItemId === id) scheduleAutoFetchFullText(id)
+          })
+      } else {
+        scheduleAutoFetchFullText(id)
       }
 
       if (item.isRead) return
@@ -373,7 +436,12 @@ export const useArticleStore = create<ArticleState>()((set, get) => {
       try {
         const full = await ItemService.GetItem(id)
         if (full) {
-          patchItem(id, { content: full.content })
+          // 同时回填 fullContent：上次会话提取过的全文此时就在库里，带回前端后
+          // 持久化的摘要/全文偏好才能对旧文章立即生效，而不是再点一次「获取全文」。
+          patchItem(id, {
+            content: full.content,
+            fullContent: full.fullContent,
+          })
         }
       } catch (err) {
         // content 加载失败不阻断阅读流程，仅记录错误。
@@ -386,7 +454,7 @@ export const useArticleStore = create<ArticleState>()((set, get) => {
       }
     },
 
-    async fetchFullContent(id) {
+    async fetchFullContent(id, silentFail = false) {
       // 防重复：同一篇已在提取中就不要再发一次（后端会再抓一遍原文）。
       if (get().fullTextLoadingId === id) return
       const existing =
@@ -406,7 +474,11 @@ export const useArticleStore = create<ArticleState>()((set, get) => {
         // 后端已把错误本地化过（见 internal/i18n），这里直接展示即可。
         // 用 toast 而不是内联提示：阅读区是正文的地盘，失败属于「刚才那个操作」，
         // 且切换文章时不该留下一条属于上一篇的提示。
-        showToast(toApiError(err), 'error')
+        // 全文模式的自动提取（silentFail）不弹：翻页会连环触发，弹错会淹没阅读区，
+        // 工具栏仍是「获取全文」，用户可手动重试。
+        if (!silentFail) {
+          showToast(toApiError(err), 'error')
+        }
       } finally {
         // 只在仍是同一篇文章时清除 loading（避免快速切换时错误清除）。
         if (get().fullTextLoadingId === id) {
@@ -416,7 +488,10 @@ export const useArticleStore = create<ArticleState>()((set, get) => {
     },
 
     toggleBodyMode() {
-      set((s) => ({ showSummary: !s.showSummary }))
+      const showSummary = !get().showSummary
+      set({ showSummary })
+      // 记为用户偏好：切换其他文章、重启、跨端同步后继续沿用。
+      void useSettingsStore.getState().update({ readerShowSummary: showSummary })
     },
 
     async batchStar(ids) {
@@ -480,5 +555,21 @@ export const useArticleStore = create<ArticleState>()((set, get) => {
     scheduleSelect(id) {
       set({ pendingSelectId: id })
     },
+
+    requestFirstSelection() {
+      set({ selectFirstAfterLoad: true })
+    },
+  }
+})
+
+/* ---------- 后端 → store 单向同步 ---------- */
+
+// 启动载入、跨端同步与写失败回滚都经由这里恢复用户上次选择的正文模式。
+// 仅在取值变化时 setState，避免与 toggleBodyMode 的写后端形成回环。
+useSettingsStore.subscribe((state) => {
+  const persisted = state.settings?.readerShowSummary
+  if (persisted === undefined) return
+  if (persisted !== useArticleStore.getState().showSummary) {
+    useArticleStore.setState({ showSummary: persisted })
   }
 })

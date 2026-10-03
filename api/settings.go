@@ -33,6 +33,10 @@ type SettingsService struct {
 	// 遇到函数类型就报「function types are not supported by encoding/json」。
 	// 该字段既不导出也不参与序列化，警告纯属噪音，但会出现在每次生成里。
 	onChanged SettingsObserver
+
+	// languageObserver 语言变更观察者，由 main 在装配期注入以刷新 Go 侧 UI
+	// （当前是应用原生菜单）。同样用接口而非 func()，原因见上。
+	languageObserver LanguageObserver
 }
 
 // ProxyApplier 接收代理设置变更的一方。
@@ -48,6 +52,14 @@ type ProxyApplier interface {
 // 生成成前端绑定（见 sync.go 生命周期一节的说明）。
 type SettingsObserver interface {
 	notifySettingsChanged()
+}
+
+// LanguageObserver 语言设置变更的接收者，由 main 实现以刷新原生菜单等 Go 侧 UI。
+//
+// 与 SettingsObserver 不同，方法必须导出——接口的实现方在 main 包。该接口不出现在
+// 任何 Wails Service 方法签名上，因此不会被生成成前端绑定。
+type LanguageObserver interface {
+	LanguageChanged(lang string)
 }
 
 // NewSettingsService 创建 SettingsService。
@@ -67,6 +79,11 @@ func NewSettingsService(st *store.Store, sch *scheduler.Scheduler, appliers ...P
 // 只应在应用装配阶段调用，不是线程安全的。
 func ObserveSettings(svc *SettingsService, o SettingsObserver) {
 	svc.onChanged = o
+}
+
+// ObserveLanguage 注册语言变更观察者。只应在应用装配阶段调用，不是线程安全的。
+func ObserveLanguage(svc *SettingsService, o LanguageObserver) {
+	svc.languageObserver = o
 }
 
 // GetSettings 读取全局设置（未持久化时返回默认值）。
@@ -96,6 +113,10 @@ func (s *SettingsService) UpdateSettings(settings store.Settings) error {
 		if applier != nil {
 			applier.SetProxy(settings.ProxyHost, settings.ProxyPort)
 		}
+	}
+	// 语言变化通知 Go 侧 UI（原生菜单）换词；前端 i18n 由前端自己切换。
+	if s.languageObserver != nil && current.Language != settings.Language {
+		s.languageObserver.LanguageChanged(settings.Language)
 	}
 	// 放在最后：只有设置确实落库并生效了才通知，否则会推送一份没保存成功的配置。
 	if s.onChanged != nil {

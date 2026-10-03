@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -72,24 +73,27 @@ const (
 	eventUserOpenBrowser = "clip:updater:user:browser"
 )
 
-// updaterI18nDict 解析出三份 locale 的 "updater" 段，拼成 {en:{...},zh:{...},zh-TW:{...}} 的
-// JSON（注入窗口用）。任一 locale 缺 "updater" 段则 panic —— 属于开发期集成错误，早失败。
-func updaterI18nDict() string {
-	extract := func(raw []byte, lang string) map[string]any {
-		var all map[string]any
-		if err := json.Unmarshal(raw, &all); err != nil {
-			log.Fatalf("updater i18n: parse %s locale: %v", lang, err)
-		}
-		seg, ok := all["updater"].(map[string]any)
-		if !ok {
-			log.Fatalf("updater i18n: %s locale 缺少 \"updater\" 段", lang)
-		}
-		return seg
+// localeSection 从一份前端 locale JSON 中取出指定段落。缺段视为开发期集成错误，
+// 直接 fatal —— 与更新窗口一致的早失败策略。
+func localeSection(raw []byte, lang, section string) map[string]any {
+	var all map[string]any
+	if err := json.Unmarshal(raw, &all); err != nil {
+		log.Fatalf("%s i18n: parse %s locale: %v", section, lang, err)
 	}
+	seg, ok := all[section].(map[string]any)
+	if !ok {
+		log.Fatalf("%s i18n: %s locale 缺少 %q 段", section, lang, section)
+	}
+	return seg
+}
+
+// updaterI18nDict 解析出三份 locale 的 "updater" 段，拼成 {en:{...},zh:{...},zh-TW:{...}} 的
+// JSON（注入窗口用）。
+func updaterI18nDict() string {
 	dict := map[string]any{
-		"en":    extract(updaterLocaleEN, "en"),
-		"zh":    extract(updaterLocaleZH, "zh"),
-		"zh-TW": extract(updaterLocaleZHTW, "zh-TW"),
+		"en":    localeSection(updaterLocaleEN, "en", "updater"),
+		"zh":    localeSection(updaterLocaleZH, "zh", "updater"),
+		"zh-TW": localeSection(updaterLocaleZHTW, "zh-TW", "updater"),
 	}
 	// json.Marshal 默认转义 <>& 为 \uXXXX，可安全内嵌进 <script>。
 	b, err := json.Marshal(dict)
@@ -540,6 +544,262 @@ func saveWindowSize(st *store.Store, window application.Window) {
 	}
 }
 
+// menuI18nDict 解析三份 locale 的 "menu" 段，返回 {en:{...},zh:{...},zh-TW:{...}}。
+// 与更新窗口一致：前端 locale 是这些文案的唯一数据源。
+func menuI18nDict() map[string]map[string]string {
+	extract := func(raw []byte, lang string) map[string]string {
+		seg := localeSection(raw, lang, "menu")
+		labels := make(map[string]string, len(seg))
+		for k, v := range seg {
+			if s, ok := v.(string); ok {
+				labels[k] = s
+			}
+		}
+		return labels
+	}
+	return map[string]map[string]string{
+		"en":    extract(updaterLocaleEN, "en"),
+		"zh":    extract(updaterLocaleZH, "zh"),
+		"zh-TW": extract(updaterLocaleZHTW, "zh-TW"),
+	}
+}
+
+// menuRoleKeys 把语言无关的菜单角色映射到 locale "menu" 段的 key。用角色而不是
+// 英文 label 定位，Wails 升级改文案时不会失配。
+var menuRoleKeys = []struct {
+	role application.Role
+	key  string
+}{
+	{application.FileMenu, "file"},
+	{application.EditMenu, "edit"},
+	{application.ViewMenu, "view"},
+	{application.WindowMenu, "window"},
+	{application.HelpMenu, "help"},
+	{application.About, "about"},
+	{application.ServicesMenu, "services"},
+	{application.Hide, "hide"},
+	{application.HideOthers, "hideOthers"},
+	{application.UnHide, "showAll"},
+	{application.Quit, "quit"},
+	{application.Undo, "undo"},
+	{application.Redo, "redo"},
+	{application.Cut, "cut"},
+	{application.Copy, "copy"},
+	{application.Paste, "paste"},
+	{application.Delete, "delete"},
+	{application.SelectAll, "selectAll"},
+	{application.Reload, "reload"},
+	{application.ForceReload, "forceReload"},
+	{application.OpenDevTools, "openDevTools"},
+	{application.ResetZoom, "actualSize"},
+	{application.ZoomIn, "zoomIn"},
+	{application.ZoomOut, "zoomOut"},
+	{application.ToggleFullscreen, "toggleFullscreen"},
+	{application.Minimise, "minimize"},
+	{application.Zoom, "zoom"},
+	{application.CloseWindow, "close"},
+}
+
+// menuBarController 统一管理原生菜单栏显隐：F11 全屏、专注模式、View 菜单的
+// 「隐藏/显示菜单」都走这里，避免多处各自记账导致状态不一致。
+//
+// 可见性分两层：
+//   - userWantsVisible 是持久化的用户偏好（Ctrl+M 的结果），写入后端设置、重启沿用；
+//   - visible 是实际状态，可能被 F11/专注模式临时压成隐藏，退出时由 Restore 恢复
+//     到用户偏好，而不是无条件显示。
+type menuBarController struct {
+	mu               sync.Mutex
+	win              *application.WebviewWindow
+	visible          bool
+	userWantsVisible bool
+	persist          func(visible bool)
+}
+
+// newMenuBarController 创建控制器并套用持久化的用户偏好。win 可为 nil（单测只
+// 验证状态机），此时不会触碰原生控件。
+func newMenuBarController(
+	win *application.WebviewWindow,
+	userWantsVisible bool,
+	persist func(visible bool),
+) *menuBarController {
+	c := &menuBarController{
+		win:              win,
+		visible:          true, // 建窗时菜单栏总是可见，随后按偏好收起
+		userWantsVisible: userWantsVisible,
+		persist:          persist,
+	}
+	c.mu.Lock()
+	c.setLocked(userWantsVisible)
+	c.mu.Unlock()
+	return c
+}
+
+// Set 临时设置菜单栏可见性（F11 全屏、专注模式），不改变用户偏好。
+func (c *menuBarController) Set(visible bool) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.setLocked(visible)
+}
+
+// Restore 恢复到持久化的用户偏好（退出全屏 / 退出专注模式时调用）。
+func (c *menuBarController) Restore() {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.setLocked(c.userWantsVisible)
+}
+
+// Apply 把当前状态重新写回原生控件。建窗时的 show_all 会把所有子控件显示出来、
+// 覆盖构造时设置的隐藏，因此窗口真正显示后需要补一次（见 mainWindow 的 WindowShow）。
+func (c *menuBarController) Apply() {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.win != nil {
+		setMenuBarVisible(c.win, c.visible)
+	}
+}
+
+// Toggle 是 View 菜单「隐藏/显示菜单」（Ctrl+M）的用户动作：从当前实际状态取反，
+// 记为用户偏好并持久化。
+func (c *menuBarController) Toggle() {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	next := !c.visible
+	c.userWantsVisible = next
+	c.setLocked(next)
+	c.mu.Unlock()
+	if c.persist != nil {
+		c.persist(next)
+	}
+}
+
+func (c *menuBarController) setLocked(visible bool) {
+	if c.visible == visible {
+		return
+	}
+	c.visible = visible
+	if c.win != nil {
+		setMenuBarVisible(c.win, visible)
+	}
+}
+
+// nativeMenu 管理应用原生菜单的多语言。
+//
+// Wails 在 Linux 上只在建窗时把菜单模型挂到窗口，之后 SetApplicationMenu 是 no-op；
+// 但菜单项已映射成 GMenuItem 后，SetLabel 会改 GMenu 模型本身，GTK 会实时重绘。
+// 因此这里「构造一次 + 原地改标签」，而不是语言切换时重建菜单。
+type nativeMenu struct {
+	menu *application.Menu
+	dict map[string]map[string]string
+
+	// 没有 role 的自定义项，改语言时需要直接 SetLabel。
+	checkForUpdates *application.MenuItem
+	toggleMenuBar   *application.MenuItem
+	learnMore       *application.MenuItem
+}
+
+// newNativeMenu 以 lang 为初始语言构造原生菜单。toggleMenuBar 是 View 菜单
+// 「隐藏/显示菜单」的点击处理。
+func newNativeMenu(
+	lang string,
+	checkForUpdates func(*application.Context),
+	toggleMenuBar func(*application.Context),
+) *nativeMenu {
+	m := &nativeMenu{
+		menu: application.DefaultApplicationMenu(),
+		dict: menuI18nDict(),
+	}
+
+	// Wails 默认 Help 菜单里的 Learn More 指向 wails.io；保留但纳入多语言。
+	m.learnMore = m.menu.FindByLabel("Learn More")
+
+	if appMenu := m.menu.FindByRole(application.AppMenu); appMenu != nil {
+		// macOS：App 菜单需要插入「检查更新…」，整个子菜单重建。
+		sub := appMenu.GetSubmenu()
+		sub.Clear()
+		sub.AddRole(application.About)
+		m.checkForUpdates = sub.Add(m.label(lang, "checkForUpdates")).OnClick(checkForUpdates)
+		sub.AddSeparator()
+		sub.AddRole(application.ServicesMenu)
+		sub.AddSeparator()
+		sub.AddRole(application.Hide)
+		sub.AddRole(application.HideOthers)
+		sub.AddRole(application.UnHide)
+		sub.AddSeparator()
+		sub.AddRole(application.Quit)
+	} else if help := m.menu.FindByRole(application.HelpMenu); help != nil {
+		// Linux / Windows：Help 菜单追加「检查更新…」。
+		m.checkForUpdates = help.GetSubmenu().Add(m.label(lang, "checkForUpdates")).OnClick(checkForUpdates)
+	}
+
+	if view := m.menu.FindByRole(application.ViewMenu); view != nil {
+		sub := view.GetSubmenu()
+		sub.AddSeparator()
+		m.toggleMenuBar = sub.Add(m.label(lang, "toggleMenuBar")).
+			SetAccelerator("Ctrl+M").
+			OnClick(toggleMenuBar)
+	}
+
+	// Window > Minimize 默认也用 CmdOrCtrl+M；非 macOS 上该加速键让给
+	// 「隐藏/显示菜单」，否则同一按键注册到两个 action，快捷键不会生效。
+	// macOS 的 Minimize 是 Cmd+M，与本项的字面 Ctrl+M 不冲突，保持原样。
+	if runtime.GOOS != "darwin" {
+		if minimise := m.menu.FindByRole(application.Minimise); minimise != nil {
+			minimise.RemoveAccelerator()
+		}
+	}
+
+	m.apply(lang)
+	return m
+}
+
+// LanguageChanged 实现 api.LanguageObserver：语言切换时原地更新菜单文案。
+func (m *nativeMenu) LanguageChanged(lang string) {
+	m.apply(lang)
+}
+
+// apply 把 lang 对应的文案写到各菜单项。菜单已挂到窗口时 GTK 会实时更新。
+func (m *nativeMenu) apply(lang string) {
+	for _, rk := range menuRoleKeys {
+		item := m.menu.FindByRole(rk.role)
+		if item == nil {
+			continue
+		}
+		if label := m.label(lang, rk.key); label != "" {
+			item.SetLabel(label)
+		}
+	}
+	if m.checkForUpdates != nil {
+		m.checkForUpdates.SetLabel(m.label(lang, "checkForUpdates"))
+	}
+	if m.toggleMenuBar != nil {
+		m.toggleMenuBar.SetLabel(m.label(lang, "toggleMenuBar"))
+	}
+	if m.learnMore != nil {
+		m.learnMore.SetLabel(m.label(lang, "learnMore"))
+	}
+}
+
+// label 返回 lang 下的菜单文案；语言或 key 缺失时回退英文。
+func (m *nativeMenu) label(lang, key string) string {
+	if labels, ok := m.dict[lang]; ok {
+		if v, ok := labels[key]; ok && v != "" {
+			return v
+		}
+	}
+	return m.dict["en"][key]
+}
+
 func main() {
 	// 清理遗留的更新包目录（孤儿临时文件）。
 	cleanOrphanedUpdateDirs()
@@ -550,8 +810,12 @@ func main() {
 		log.Fatalf("failed to init store: %v", err)
 	}
 
-	// 读取设置以决定窗口启动行为（最小化等）。读取失败时退回默认值。
-	settings, _ := st.GetSettings()
+	// 读取设置以决定窗口启动行为（最小化等）。读取失败时退回默认值，
+	// 不能用零值 —— 否则 MenuBarVisible 等 bool 默认项会被误判成关闭。
+	settings, err := st.GetSettings()
+	if err != nil {
+		settings = store.DefaultSettings()
+	}
 
 	// 通知服务（需同时注册为 application.Service 并注入调度器）。
 	notifSvc := notifications.New()
@@ -603,11 +867,39 @@ func main() {
 	// 不再另起第二条 HTTP 路径。
 	itemSvc := api.NewItemService(st, ft)
 
+	// menuBarCtl 在建窗后赋值；在此之前前端不会调用 SetFocusMode，闭包里的 nil
+	// 接收者对 Set/Restore 是安全的。
+	var menuBarCtl *menuBarController
+
+	// persistMenuBarVisible 把「隐藏/显示菜单」的用户选择写回设置。直接走 store：
+	// 与窗口尺寸持久化同路，不经 SettingsService（那是前端设置变更的通道）。
+	persistMenuBarVisible := func(visible bool) {
+		current, err := st.GetSettings()
+		if err != nil {
+			log.Printf("menu bar: read settings: %v", err)
+			return
+		}
+		if current.MenuBarVisible == visible {
+			return
+		}
+		current.MenuBarVisible = visible
+		if err := st.UpdateSettings(current); err != nil {
+			log.Printf("menu bar: save visibility: %v", err)
+		}
+	}
+
 	sysSvc := &api.SystemService{
 		AppVersion:      currentVersion,
 		ChangelogURL:    changelogURL,
 		Store:           st,
 		OnlineChangedFn: func(online bool) { sch.SetOfflineMode(!online) },
+		FocusModeChangedFn: func(enabled bool) {
+			if enabled {
+				menuBarCtl.Set(false) // 专注模式临时隐藏
+			} else {
+				menuBarCtl.Restore() // 退出后回到用户偏好
+			}
+		},
 		LanguageFn: func() string {
 			if current, err := st.GetSettings(); err == nil {
 				return current.Language
@@ -684,34 +976,18 @@ func main() {
 	sysSvc.CheckSilentFn = updCtrl.checkSilent
 	sysSvc.NoUpdateFn = updCtrl.confirmedNoUpdate
 
-	menu := application.DefaultApplicationMenu()
-
-	// 「检查更新…」点击处理：与前端 SystemService.CheckForUpdates() 走同一条路。
-	checkForUpdates := func(*application.Context) {
+	// 原生应用菜单：文案来自前端 locale 的 "menu" 段，语言切换时由 menuCtl 原地更新。
+	// 「检查更新…」与前端 SystemService.CheckForUpdates() 走同一条路。
+	menuCtl := newNativeMenu(settings.Language, func(*application.Context) {
 		updCtrl.check()
-	}
-
-	if appMenu := menu.FindByRole(application.AppMenu); appMenu != nil {
-		sub := appMenu.GetSubmenu()
-		sub.Clear()
-		sub.AddRole(application.About)
-		sub.Add("Check for Updates…").OnClick(checkForUpdates)
-		sub.AddSeparator()
-		sub.AddRole(application.ServicesMenu)
-		sub.AddSeparator()
-		sub.AddRole(application.Hide)
-		sub.AddRole(application.HideOthers)
-		sub.AddRole(application.UnHide)
-		sub.AddSeparator()
-		sub.AddRole(application.Quit)
-	} else if help := menu.FindByRole(application.HelpMenu); help != nil {
-		help.GetSubmenu().Add("Check for Updates…").OnClick(checkForUpdates)
-	}
-
-	app.Menu.SetApplicationMenu(menu)
+	}, func(*application.Context) {
+		menuBarCtl.Toggle()
+	})
+	app.Menu.SetApplicationMenu(menuCtl.menu)
+	api.ObserveLanguage(settingsSvc, menuCtl)
 
 	// 点击通知 → 调起窗口 + 向前端推送 article ID，前端自行定位。
-	var mainWindow application.Window
+	var mainWindow *application.WebviewWindow
 	notifSvc.OnNotificationResponse(func(result notifications.NotificationResult) {
 		if result.Error != nil {
 			log.Printf("notification response error: %v", result.Error)
@@ -777,6 +1053,32 @@ func main() {
 	mainWindow.OnWindowEvent(events.Common.WindowClosing, func(_ *application.WindowEvent) {
 		saveWindowSize(st, mainWindow)
 	})
+
+	// 建窗后菜单栏已经挂在窗口上，控制器从这里开始接管其显隐，并套用持久化偏好。
+	menuBarCtl = newMenuBarController(mainWindow, settings.MenuBarVisible, persistMenuBarVisible)
+
+	// 建窗后的显示流程会 show 所有子控件，覆盖构造时的隐藏；窗口真正显示后再套用
+	// 一次偏好，隐藏状态才能跨重启生效。
+	mainWindow.OnWindowEvent(events.Common.WindowShow, func(_ *application.WindowEvent) {
+		menuBarCtl.Apply()
+	})
+
+	// F11 全屏时隐藏顶部菜单栏，退出全屏时恢复。
+	//
+	// 覆盖「切换全屏」菜单项的点击处理：Wails 的默认回调只管切全屏。F11 加速键注册在
+	// 应用级 GAction 上（gtk_application_set_accels_for_action），菜单栏隐藏后仍然生效，
+	// 所以再按一次 F11 能退出全屏并恢复菜单栏。
+	if item := menuCtl.menu.FindByRole(application.ToggleFullscreen); item != nil {
+		item.OnClick(func(*application.Context) {
+			if mainWindow.IsFullscreen() {
+				mainWindow.UnFullscreen()
+				menuBarCtl.Restore() // 回到用户偏好，而不是无条件显示
+			} else {
+				mainWindow.Fullscreen()
+				menuBarCtl.Set(false)
+			}
+		})
+	}
 
 	sysSvc.Window = mainWindow
 
