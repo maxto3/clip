@@ -1,5 +1,10 @@
 import { useMemo } from 'react'
-import { useArticleStore, useLayoutStore, useSidebarStore } from '../Stores'
+import {
+  useArticleStore,
+  useLayoutStore,
+  useReaderStore,
+  useSidebarStore,
+} from '../Stores'
 import { buildFeedTree, feedAncestorIds, flattenFeedIds } from '../Utils'
 import { useArticleNavigation } from './useArticles'
 import { type Hotkey, useHotkeys } from './useHotkeys'
@@ -28,16 +33,35 @@ function isInteractive(el: Element | null): boolean {
   return (el as HTMLElement).isContentEditable === true
 }
 
-/** 翻动当前可见阅读区（dir=1 向下，dir=-1 向上）。专注模式优先其覆盖层。 */
-function pageReader(dir: 1 | -1): void {
+/** 当前可见阅读区的滚动容器（专注模式优先其覆盖层）。 */
+function readerScrollEl(): HTMLElement | null {
   const inFocus = useLayoutStore.getState().focusMode
   const selector = inFocus
     ? '[data-reader-scroll="focus"]'
     : '[data-reader-scroll="main"]'
-  const el = document.querySelector(selector) as HTMLElement | null
+  return document.querySelector(selector) as HTMLElement | null
+}
+
+/** 翻动当前可见阅读区（dir=1 向下，dir=-1 向上）。 */
+function pageReader(dir: 1 | -1): void {
+  const el = readerScrollEl()
   if (!el) return
   const step = Math.max(el.clientHeight - 60, 100)
   el.scrollBy({ top: dir * step, behavior: 'smooth' })
+}
+
+/** 按排版的一行高度滚动阅读区（↑/↓ 用，步进随字号 × 行高）。 */
+function scrollReaderLine(dir: 1 | -1): void {
+  const el = readerScrollEl()
+  if (!el) return
+  const { fontSize, lineHeight } = useReaderStore.getState()
+  el.scrollBy({ top: dir * Math.round(fontSize * lineHeight) })
+}
+
+/** 焦点是否在已打开的 Radix 菜单内——方向键留给菜单自身导航，别去滚阅读区。 */
+function isMenuFocused(): boolean {
+  const el = document.activeElement
+  return el instanceof Element && el.closest('[role="menu"]') !== null
 }
 
 /**
@@ -79,16 +103,17 @@ function switchFeed(dir: 1 | -1): void {
 /**
  * 注册应用全部全局快捷键。在 App 顶层挂载一次。
  *
- * 覆盖：添加订阅、刷新、阅读区翻页、筛选切换、聚焦搜索、上一篇/下一篇、上/下一个订阅源。
- * `J/K` 在非专注模式下由此处处理；专注模式下让位给 FocusMode（它还负责
- * `↑/↓`、灯箱等），避免同一次按键触发两次导航。`Esc` 由 Radix/FocusMode 处理。
+ * 覆盖：添加订阅、刷新、阅读区翻页/按行滚动、筛选切换、聚焦搜索、上一篇/下一篇、上/下一个订阅源。
+ * `J/K` 在非专注模式下由此处处理；专注模式下让位给 FocusMode（它还负责灯箱等），
+ * 避免同一次按键触发两次导航。`↑/↓` 两种模式都由此处按行滚动当前阅读区，
+ * 与 Space 翻页同一套「照当前可见阅读区」的定位。`Esc` 由 Radix/FocusMode 处理。
  */
 export function useAppHotkeys(actions: AppHotkeyActions): void {
   const { onAddFeed, onOpenSettings } = actions
   const nav = useArticleNavigation()
 
   const bindings = useMemo<Hotkey[]>(() => {
-    // 专注模式自管 J/K（含 Shift 大小写与 ↑/↓），这里直接让位。
+    // 专注模式自管 J/K（含 Shift 大小写），这里直接让位（↑/↓ 不在此列）。
     const navInNormalMode = (handler: () => void) => (e: KeyboardEvent) => {
       if (useLayoutStore.getState().focusMode) return
       e.preventDefault()
@@ -210,6 +235,24 @@ export function useAppHotkeys(actions: AppHotkeyActions): void {
           if (isInteractive(document.activeElement)) return
           e.preventDefault()
           pageReader(-1)
+        },
+      },
+      // ↑/↓：两种模式都只是在当前文章内按行滚动（翻页交给 Space），
+      // 不再像专注模式旧版那样切换上一篇/下一篇。
+      {
+        combo: 'arrowdown',
+        handler: (e) => {
+          if (isMenuFocused()) return // 菜单打开时方向键归菜单自身导航
+          e.preventDefault()
+          scrollReaderLine(1)
+        },
+      },
+      {
+        combo: 'arrowup',
+        handler: (e) => {
+          if (isMenuFocused()) return
+          e.preventDefault()
+          scrollReaderLine(-1)
         },
       },
     ]

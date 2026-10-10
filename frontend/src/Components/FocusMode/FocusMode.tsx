@@ -113,7 +113,7 @@ function FocusMode(): JSX.Element | null {
     flashBar()
   }, [itemId, mounted, flashBar])
 
-  // ===== 键盘：Esc 退出 / J·↓ 下一篇 / K·↑ 上一篇 =====
+  // ===== 键盘：Esc 退出 / J 下一篇 / K 上一篇（↑/↓ 由全局快捷键按行滚动正文） =====
   const navRef = useRef(nav)
   navRef.current = nav
   useEffect(() => {
@@ -129,13 +129,11 @@ function FocusMode(): JSX.Element | null {
           break
         case 'j':
         case 'J':
-        case 'ArrowDown':
           e.preventDefault()
           navRef.current.goNext()
           break
         case 'k':
         case 'K':
-        case 'ArrowUp':
           e.preventDefault()
           navRef.current.goPrev()
           break

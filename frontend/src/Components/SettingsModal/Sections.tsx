@@ -1155,10 +1155,12 @@ export function ShortcutSection(): JSX.Element {
     {
       titleKey: 'settings.shortcuts.groups.reading',
       items: [
-        { combo: 'j / ↓', descKey: 'settings.shortcuts.nextArticle' },
-        { combo: 'k / ↑', descKey: 'settings.shortcuts.prevArticle' },
+        { combo: 'j', descKey: 'settings.shortcuts.nextArticle' },
+        { combo: 'k', descKey: 'settings.shortcuts.prevArticle' },
         { combo: 'mod+j', descKey: 'settings.shortcuts.nextFeed' },
         { combo: 'mod+k', descKey: 'settings.shortcuts.prevFeed' },
+        { combo: '↓', descKey: 'settings.shortcuts.scrollLineDown' },
+        { combo: '↑', descKey: 'settings.shortcuts.scrollLineUp' },
         { combo: 'space', descKey: 'settings.shortcuts.scrollDown' },
         { combo: 'shift+space', descKey: 'settings.shortcuts.scrollUp' },
         { combo: 'mod+shift+f', descKey: 'settings.shortcuts.toggleFocus' },

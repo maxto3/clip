@@ -279,6 +279,8 @@
       "prevFeed": "上一個訂閱來源",
       "scrollDown": "向下翻页",
       "scrollUp": "向上翻页",
+      "scrollLineDown": "向下捲動一行",
+      "scrollLineUp": "向上捲動一行",
       "toggleFocus": "切换專注模式",
       "exitFocus": "登出專注模式 / 關閉弹窗",
       "filterAll": "全部文章",

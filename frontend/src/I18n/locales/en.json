@@ -279,6 +279,8 @@
       "prevFeed": "Previous feed",
       "scrollDown": "Scroll down",
       "scrollUp": "Scroll up",
+      "scrollLineDown": "Scroll down one line",
+      "scrollLineUp": "Scroll up one line",
       "toggleFocus": "Toggle focus mode",
       "exitFocus": "Exit focus / close modal",
       "filterAll": "All articles",

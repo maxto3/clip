@@ -39,7 +39,10 @@ function ArticleRow(props: ArticleRowProps): JSX.Element {
       className={clsx(styles.row, selected && styles.rowSelected)}
       onClick={() => onSelect(item.id)}
       onKeyDown={(e) => {
-        if (e.key === 'Enter' || e.key === ' ') {
+        // 只保留回车选中。空格必须让位给全局「阅读区翻页」快捷键（见 useAppHotkeys
+        // 的 space 绑定）：J/K 只改选中不改 DOM 焦点，点击后焦点会残留在旧行上，
+        // 若此处也响应空格，会在翻页前把选中切回焦点所在的旧文章。
+        if (e.key === 'Enter') {
           e.preventDefault()
           onSelect(item.id)
         }
